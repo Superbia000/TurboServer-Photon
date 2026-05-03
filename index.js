@@ -1,6 +1,7 @@
 /**
- * TurboServer-Photon: 终极服务器加速插件 (优雅降级+诊断版)
- * 自动检测依赖，缺失时安全跳过并提示安装，可选依赖加载失败会打印详细错误
+ * TurboServer-Photon: 终极服务器加速插件 (清晰提示版)
+ * 自动检测依赖，缺失时安全跳过并提示安装
+ * 提供: Brotli/Zstd压缩, 多级缓存+ETag+自动清缓存, MessagePack, HTTP/2 Push等
  */
 
 const path = require('path');
@@ -8,10 +9,10 @@ const fs = require('fs');
 
 // ================= 依赖自检（加强诊断） =================
 const DEPS_MAP = {
-    compression: { mod: null, pkg: 'compression' },
-    lruCache:     { mod: null, pkg: 'lru-cache' },
-    msgpack:      { mod: null, pkg: 'msgpack-lite' },
-    zstd:         { mod: null, pkg: 'node-zstd', optional: true },
+    compression: { mod: null, pkg: 'compression', required: true },
+    lruCache:    { mod: null, pkg: 'lru-cache', required: true },
+    msgpack:     { mod: null, pkg: 'msgpack-lite', required: true },
+    zstd:        { mod: null, pkg: 'node-zstd', required: false },
 };
 
 const missingRequired = [];
@@ -21,18 +22,18 @@ for (const [key, dep] of Object.entries(DEPS_MAP)) {
     try {
         const raw = require(dep.pkg);
         if (key === 'lruCache' && raw && raw.default) {
-            dep.mod = raw.default;  // lru-cache v7+ 的 ESM 兼容
+            dep.mod = raw.default;
         } else {
             dep.mod = raw;
         }
         console.log(`[Photon-Server] ✔ 已加载: ${dep.pkg}`);
     } catch (e) {
-        if (dep.optional) {
-            optionalWarnings.push({ pkg: dep.pkg, error: e.message });
-            console.log(`[Photon-Server] ⚠ 可选依赖 ${dep.pkg} 加载失败: ${e.message}`);
-        } else {
+        if (dep.required) {
             missingRequired.push(dep.pkg);
             console.log(`[Photon-Server] ✖ 必需依赖 ${dep.pkg} 加载失败: ${e.message}`);
+        } else {
+            optionalWarnings.push({ pkg: dep.pkg, error: e.message });
+            console.log(`[Photon-Server] ⚠ 可选依赖 ${dep.pkg} 加载失败: ${e.message}`);
         }
     }
 }
@@ -45,11 +46,12 @@ function log(msg, type = 'info') {
 if (missingRequired.length > 0) {
     log('缺少必需依赖，相关优化将被禁用:', 'error');
     missingRequired.forEach(pkg => log(`   - ${pkg}`, 'error'));
-    log(`安装命令: cd plugins/TurboServer-Photon && npm install ${missingRequired.join(' ')}`, 'warn');
+    log(`在插件目录运行: npm install ${missingRequired.join(' ')}`, 'warn');
 }
 if (optionalWarnings.length > 0) {
     log('部分可选依赖未能加载，相关功能关闭:', 'warn');
     optionalWarnings.forEach(({pkg, error}) => log(`   - ${pkg}: ${error}`, 'warn'));
+    log(`如需启用，请在插件目录运行: npm install ${optionalWarnings.map(w=>w.pkg).join(' ')}`, 'warn');
 }
 
 // ================= 全局变量 =================
@@ -135,7 +137,7 @@ async function init(router) {
         log('compression 缺失，Brotli 不可用', 'error');
     }
 
-    // 2. Zstd (可选)，若加载失败会再次尝试并输出错误
+    // 2. Zstd (可选)，并再次给出安装路径建议
     if (DEPS_MAP.zstd.mod) {
         const zstd = DEPS_MAP.zstd.mod;
         app.use((req, res, next) => {
@@ -160,27 +162,23 @@ async function init(router) {
         });
         log('Zstd 压缩已激活', 'success');
     } else {
-        // 如果之前依赖检测失败，这里再次尝试加载以便获取更详细的错误
-        try {
-            require.resolve('node-zstd');
-            log('node-zstd 模块存在但加载失败，请检查原生编译', 'error');
-        } catch (e) {
-            log('node-zstd 未正确安装，跳过 Zstd 压缩', 'warn');
-        }
+        // 给出明确的安装路径和诊断
+        log(`Zstd 未加载。若要启用，请在插件目录运行: cd ${__dirname} && npm install node-zstd`, 'warn');
     }
 
-    // 3. 多级缓存 + ETag + 失效
+    // 3. 多级缓存 + ETag + 写入自动清缓存 （原“失效”改为更清晰描述）
     if (DEPS_MAP.lruCache.mod) {
         const LRUCache = DEPS_MAP.lruCache.mod;
         cache = new LRUCache({ max: 2000, ttl: 1000*60*10 });
         staleCache = new LRUCache({ max: 1000, ttl: 1000*60*60 });
 
+        // 写操作自动清缓存
         app.use('/api', (req, res, next) => {
             if (['POST','PUT','DELETE','PATCH'].includes(req.method)) {
                 const base = req.originalUrl.split('?')[0];
                 cache.delete(base);
                 staleCache.delete(base);
-                log(`缓存失效: ${base}`, 'info');
+                log(`自动清除缓存: ${base}`, 'info');
             }
             next();
         });
@@ -193,7 +191,7 @@ async function init(router) {
                 res.setHeader('ETag', `"${fresh._etag}"`);
                 if (req.headers['if-none-match'] === `"${fresh._etag}"`) {
                     res.status(304).end();
-                    log(`304: ${key}`, 'info');
+                    log(`304 未修改: ${key}`, 'info');
                     return;
                 }
                 res.setHeader('X-Photon-Cache', 'HIT');
@@ -214,7 +212,7 @@ async function init(router) {
                     const etag = hashBody(d);
                     cache.set(key, {data:d, _etag:etag});
                     staleCache.set(key, {data:d, _etag:etag});
-                }).catch(e=>log(`刷新失败: ${key}`,'warn')), 0);
+                }).catch(e=>log(`后台刷新失败: ${key}`,'warn')), 0);
                 return res.json(stale.data);
             }
             const _json = res.json.bind(res);
@@ -229,7 +227,7 @@ async function init(router) {
             };
             next();
         });
-        log('多级缓存+ETag+失效 已启用', 'success');
+        log('多级缓存 + ETag + 写操作自动清缓存 已启用', 'success');
     } else {
         log('lru-cache 缺失，缓存不可用', 'error');
     }
@@ -302,4 +300,4 @@ async function exit() {
     log('光子引擎已安全关闭', 'warn');
 }
 
-module.exports = { init, exit, info: { id: 'photon-server', name: 'Photon Server', description: '服务器端性能加速插件：Brotli/Zstd压缩、多级缓存、ETag、MessagePack、HTTP/2 Push等（缺失依赖会自动禁用并提示原因）' } };
+module.exports = { init, exit, info: { id: 'photon-server', name: 'Photon Server', description: '服务器端性能加速插件：Brotli/Zstd压缩、多级缓存、ETag、MessagePack、HTTP/2 Push等（缺失依赖会自动禁用并提示安装）' } };
