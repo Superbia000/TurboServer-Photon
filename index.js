@@ -19,6 +19,7 @@ const missingDeps = [];
 for (const [key, dep] of Object.entries(DEPS_MAP)) {
     try {
         dep.mod = require(dep.pkg);
+        // lru-cache v7+ 通过 require 返回 { default: LRUCache }，提取 .default
         if (key === 'lruCache' && dep.mod && dep.mod.default) {
             dep.mod = dep.mod.default;
         }
@@ -145,9 +146,10 @@ async function init(router) {
         log('Zstd 压缩已激活', 'success');
     } else log('node-zstd 未安装，跳过', 'warn');
 
-    // 3. 多级缓存 + ETag + 失效
+    // 3. 多级缓存 + ETag + 失效 (依赖 lru-cache)
     if (DEPS_MAP.lruCache.mod) {
-        const { LRUCache } = DEPS_MAP.lruCache.mod;
+        // 直接使用 DEPS_MAP.lruCache.mod 作为 LRUCache 构造函数
+        const LRUCache = DEPS_MAP.lruCache.mod;
         cache = new LRUCache({ max: 2000, ttl: 1000*60*10 });
         staleCache = new LRUCache({ max: 1000, ttl: 1000*60*60 });
 
