@@ -1,0 +1,16 @@
+{
+  "name": "sillytavern-turbo-server-photon",
+  "version": "1.0.0",
+  "description": "终极服务器加速插件：Brotli/LZ4/Zstd压缩、多级缓存、ETag、MessagePack、HTTP/2 Push等",
+  "main": "index.js",
+  "author": "PhotonOptimizer",
+  "license": "AGPL-3.0",
+  "dependencies": {
+    "compression": "^1.7.4",
+    "lru-cache": "^7.14.1",
+    "msgpack-lite": "^0.1.26"
+  },
+  "optionalDependencies": {
+    "node-zstd": "^2.0.0"
+  }
+}
